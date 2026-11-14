@@ -1,6 +1,6 @@
 # ComfyUI Model Mirror
 
-在 ComfyUI 缺失模型面板底部提供「使用 HF-Mirror」开关，默认开启，选择保存在当前浏览器。开启时通过原有的「下载」和「全部下载」按钮下载镜像文件，保留工作流链接中的仓库、revision 和文件路径，并将文件保存到 ComfyUI 的模型目录。关闭时使用 ComfyUI 自带的下载流程，原站下载进度由浏览器显示。
+在 ComfyUI 缺失模型列表上方提供「使用 HF-Mirror（单项与全部下载）」开关，默认开启，选择保存在当前浏览器。开启时通过原有的「下载」和「全部下载」按钮下载镜像文件，保留工作流链接中的仓库、revision 和文件路径，并将文件保存到 ComfyUI 的模型目录。关闭时使用 ComfyUI 自带的下载流程，原站下载进度由浏览器显示。
 
 把本仓库放入 ComfyUI 的 `custom_nodes`，重启 ComfyUI，再刷新浏览器。Docker 部署可把插件仓库挂载到 `/opt/ComfyUI/custom_nodes/comfyui-model-mirror`。下载完成后刷新缺失模型列表。
 

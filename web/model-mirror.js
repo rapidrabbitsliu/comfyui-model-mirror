@@ -5,6 +5,7 @@ const rowControls = `${rowDownloadControl}, [data-testid="missing-model-locate"]
 const downloadAllControl = '[data-testid="missing-model-download-all"]';
 const downloadControls = `${rowDownloadControl}, ${downloadAllControl}`;
 const actionsSelector = '[data-testid="missing-model-actions"]';
+const rowsSelector = '[data-testid="missing-model-importable-rows"]';
 const preferenceKey = "comfyui-model-mirror.enabled";
 const hfUrl = /^https:\/\/(huggingface\.co|hf\.co|hf-mirror\.com)\//i;
 
@@ -251,8 +252,8 @@ async function downloadBatch(button, caption, status) {
 
 let mirrorEnabled = localStorage.getItem(preferenceKey) !== "false";
 
-function addMirrorSwitch(actions) {
-    let label = actions.previousElementSibling;
+function addMirrorSwitch(rows) {
+    let label = rows.previousElementSibling;
     if (!label?.hasAttribute("data-model-mirror-switch")) label = null;
     if (label) {
         label.firstElementChild.checked = mirrorEnabled;
@@ -260,7 +261,7 @@ function addMirrorSwitch(actions) {
     }
     label = document.createElement("label");
     label.dataset.modelMirrorSwitch = "";
-    label.className = "mt-2 inline-flex items-center gap-1.5 text-xs";
+    label.className = "mb-2 flex items-center gap-1.5 text-xs";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.setAttribute("role", "switch");
@@ -272,8 +273,8 @@ function addMirrorSwitch(actions) {
             other.checked = mirrorEnabled;
         }
     });
-    label.append(input, "使用 HF-Mirror");
-    actions.before(label);
+    label.append(input, "使用 HF-Mirror（单项与全部下载）");
+    rows.before(label);
 }
 
 async function interceptDownload(event) {
@@ -332,9 +333,11 @@ app.registerExtension({
         document.addEventListener("click", interceptDownload, true);
         const scan = () => {
             for (const label of document.querySelectorAll("[data-model-mirror-switch]")) {
-                if (!label.nextElementSibling?.matches(actionsSelector)) label.remove();
+                if (!label.nextElementSibling?.matches(rowsSelector)) label.remove();
             }
-            for (const actions of document.querySelectorAll(actionsSelector)) addMirrorSwitch(actions);
+            for (const rows of document.querySelectorAll(rowsSelector)) {
+                if (rows.parentElement.querySelector(actionsSelector)) addMirrorSwitch(rows);
+            }
             if (lockedButtons) lockDownloadButtons();
         };
         let scheduled = false;
