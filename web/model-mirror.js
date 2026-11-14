@@ -6,6 +6,8 @@ const downloadAllControl = '[data-testid="missing-model-download-all"]';
 const downloadControls = `${rowDownloadControl}, ${downloadAllControl}`;
 const actionsSelector = '[data-testid="missing-model-actions"]';
 const rowsSelector = '[data-testid="missing-model-importable-rows"]';
+const missingModelsGroup = '[data-testid="error-group-missing-model"]';
+const refreshControl = '[data-testid="missing-model-header-refresh"]';
 const preferenceKey = "comfyui-model-mirror.enabled";
 const hfUrl = /^https:\/\/(huggingface\.co|hf\.co|hf-mirror\.com)\//i;
 
@@ -96,7 +98,12 @@ async function downloadWithProgress(model, url, status, button) {
         if (current.total) {
             button.style.setProperty("--model-mirror-progress", `${Math.min(100, 100 * current.bytes / current.total)}%`);
         }
-        status.textContent = `${model.name} · ${size} · ${formatBytes(speed)}/s · 已用 ${formatTime((now - start) / 1000)} · 预计剩余 ${eta}`;
+        status.textContent = [
+            model.name,
+            `已下载 ${size}`,
+            `网速 ${formatBytes(speed)}/s`,
+            `已用 ${formatTime((now - start) / 1000)} · 预计剩余 ${eta}`,
+        ].join("\n");
     };
 
     const tick = async () => {
@@ -182,6 +189,7 @@ function lockDownloadButtons() {
 }
 
 async function withDownloadState(button, task) {
+    const refresh = button.closest(missingModelsGroup)?.querySelector(refreshControl);
     lockedButtons = new Set();
     lockDownloadButtons();
     const overlay = document.createElement("span");
@@ -197,10 +205,11 @@ async function withDownloadState(button, task) {
     if (previous?.hasAttribute("data-model-mirror-status")) previous.remove();
     const status = document.createElement("div");
     status.dataset.modelMirrorStatus = "";
-    status.className = "break-all px-1 py-1 text-xs text-muted-foreground";
+    status.className = "whitespace-pre-line break-words px-1 py-1 text-xs leading-relaxed text-muted-foreground";
     anchor.after(status);
+    let downloaded;
     try {
-        await task(caption, status);
+        downloaded = await task(caption, status);
     } catch (error) {
         status.textContent = `下载失败 · ${error.message}`;
     } finally {
@@ -209,6 +218,13 @@ async function withDownloadState(button, task) {
         button.removeAttribute("aria-busy");
         for (const control of lockedButtons) control.disabled = false;
         lockedButtons = null;
+    }
+    if (downloaded) {
+        if (refresh?.isConnected) {
+            refresh.click();
+        } else if (status.isConnected) {
+            status.textContent += "\n请刷新缺失模型列表。";
+        }
     }
 }
 
@@ -247,7 +263,8 @@ async function downloadBatch(button, caption, status) {
     if (skipped) summary.push(`已跳过 ${skipped} 个`);
     if (remaining) summary.push(`未完成 ${remaining} 个`);
     if (unresolved) summary.push(`无法读取目录的模型行 ${unresolved} 个`);
-    status.textContent = summary.join("，") + (downloaded ? "。请刷新缺失模型列表。" : "。");
+    status.textContent = summary.join("，") + "。";
+    return downloaded;
 }
 
 let mirrorEnabled = localStorage.getItem(preferenceKey) !== "false";
@@ -285,17 +302,18 @@ async function interceptDownload(event) {
     if (lockedButtons || button.disabled) return;
     await withDownloadState(button, async (caption, status) => {
         if (button.matches(downloadAllControl)) {
-            await downloadBatch(button, caption, status);
-            return;
+            return downloadBatch(button, caption, status);
         }
         const model = rowModel(button);
         if (!model?.directory) {
             window.alert("无法读取模型目录，请检查前端版本。");
             return;
         }
-        status.textContent = await downloadWithFallback(model, status, button) === "downloaded"
-            ? `${model.name} 下载完成，请刷新缺失模型列表。`
+        const downloaded = await downloadWithFallback(model, status, button) === "downloaded";
+        status.textContent = downloaded
+            ? `${model.name} 下载完成。`
             : `${model.name} · 下载已停止`;
+        return downloaded;
     });
 }
 
