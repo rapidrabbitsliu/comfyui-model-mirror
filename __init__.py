@@ -2,10 +2,16 @@
 from aiohttp import web
 from server import PromptServer
 
-from .download import download, ModelDownloadError
+from .download import download, ModelDownloadError, progress
 
 WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {}
+
+
+@PromptServer.instance.routes.get("/model-mirror/progress/{request_id}")
+async def download_progress(request):
+    result = progress.get(request.match_info["request_id"])
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
 @PromptServer.instance.routes.post("/model-mirror/download")

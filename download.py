@@ -15,6 +15,7 @@ SOURCE_HOSTS = {"huggingface.co", "hf.co", MIRROR} | MODELSCOPE
 REDIRECT_SUFFIXES = (".hf-mirror.com", ".modelscope.cn", ".modelscope-cdn.cn",
                      ".hf.co", ".huggingface.co", ".aliyuncs.com")
 active = set()
+progress = {}
 
 
 class ModelDownloadError(Exception):
@@ -91,9 +92,17 @@ async def download(data):
     url = source_url(raw_url)
     if unquote(urlsplit(url).path.rsplit("/", 1)[-1]) != target.name:
         raise ValueError("The download filename differs from the workflow model")
-    if target.exists() or target in active:
+    request_id = data.get("request_id")
+    if request_id is not None and (
+        not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9-]{36}", request_id)
+    ):
+        raise ValueError("Invalid download request ID")
+    if target.exists() or target in active or request_id in progress:
         raise ModelDownloadError("The file already exists or is being downloaded")
     active.add(target)
+    transfer = {"bytes": 0, "total": None}
+    if request_id is not None:
+        progress[request_id] = transfer
     temp = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -106,12 +115,14 @@ async def download(data):
                     raise ModelDownloadError("The source returned a page instead of a model file")
                 sha = hashlib.sha256()
                 total = 0
+                transfer["total"] = response.content_length
                 with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".part", delete=False) as output:
                     temp = Path(output.name)
                     async for chunk in response.content.iter_chunked(1024 * 1024):
                         output.write(chunk)
                         sha.update(chunk)
                         total += len(chunk)
+                        transfer["bytes"] = total
                 if not total or response.content_length not in (total, None):
                     raise ModelDownloadError("Incomplete download")
                 if digest and sha.hexdigest() != digest.lower():
@@ -123,5 +134,6 @@ async def download(data):
         raise ModelDownloadError(f"Download failed ({type(error).__name__})") from error
     finally:
         active.discard(target)
+        progress.pop(request_id, None)
         if temp is not None:
             temp.unlink(missing_ok=True)
