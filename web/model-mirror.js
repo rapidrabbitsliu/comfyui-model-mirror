@@ -1,5 +1,9 @@
 import { app } from "/scripts/app.js";
 
+const rowControls = '[data-testid="missing-model-download"], [data-testid="missing-model-locate"]';
+const downloadAllControl = '[data-testid="missing-model-download-all"]';
+const hfUrl = /^https:\/\/(huggingface\.co|hf\.co|hf-mirror\.com)\//i;
+
 function rowProps(button) {
     for (let element = button; element; element = element.parentElement) {
         for (let component = element.__vueParentComponent; component; component = component.parent) {
@@ -47,60 +51,134 @@ async function download(model, url) {
     if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
 }
 
-function attach(original) {
+function addButton(original, label) {
     if (original.nextElementSibling?.dataset.modelMirror) return;
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.modelMirror = "true";
-    button.className = "rounded border px-2 py-1 text-xs";
-    button.textContent = "HF-Mirror";
+    button.className = "ml-1 shrink-0 rounded border px-2 py-1 text-xs";
+    button.textContent = label;
     original.after(button);
+    return button;
+}
 
+async function downloadWithFallback(model, batch = false) {
+    const mirrorUrl = hfUrl.test(model.url || "") ? model.url : "";
+    let url = mirrorUrl;
+    for (;;) {
+        let reason = "工作流没有提供 Hugging Face 文件链接。";
+        if (url) {
+            try {
+                await download(model, url);
+                return "downloaded";
+            } catch (error) {
+                reason = error.message;
+            }
+        }
+        const choice = window.prompt([
+            `${model.name}：${reason}`,
+            ...(mirrorUrl ? ["1 重试 HF-Mirror"] : []),
+            "2 在魔搭搜索模型",
+            "3 粘贴文件直链",
+            ...(batch ? ["4 跳过此模型，继续下载"] : []),
+            batch ? "取消即停止批量下载" : "取消即停止",
+        ].join("\n"));
+        if (choice === "1" && mirrorUrl) {
+            url = mirrorUrl;
+        } else if (choice === "2") {
+            window.open(
+                `https://modelscope.cn/search?search=${encodeURIComponent(model.name.split("/").pop())}`,
+                "_blank", "noopener,noreferrer"
+            );
+            url = window.prompt("核对仓库、版本和精度后，粘贴魔搭文件直链。");
+            if (!url) return "stopped";
+        } else if (choice === "3") {
+            url = window.prompt("粘贴 HF-Mirror 或魔搭文件直链。");
+            if (!url) return "stopped";
+        } else {
+            return batch && choice === "4" ? "skipped" : "stopped";
+        }
+    }
+}
+
+// Serialize downloads so a batch and a row cannot open fallback prompts together.
+let downloadInProgress = false;
+
+function onDownload(button, task) {
     button.addEventListener("click", async () => {
+        if (downloadInProgress) {
+            window.alert("已有模型正在下载，请等待完成。");
+            return;
+        }
+        downloadInProgress = true;
+        button.disabled = true;
+        const label = button.textContent;
+        try {
+            await task();
+        } finally {
+            button.textContent = label;
+            button.disabled = false;
+            downloadInProgress = false;
+        }
+    });
+}
+
+function attach(original) {
+    const button = addButton(original, "HF-Mirror");
+    if (!button) return;
+    onDownload(button, async () => {
         const model = rowModel(original);
         if (!model?.directory) {
             window.alert("无法读取模型目录，请检查前端版本。");
             return;
         }
-        const hf = /^https:\/\/(huggingface\.co|hf\.co|hf-mirror\.com)\//i;
-        let url = hf.test(model.url || "") ? model.url : "";
-        button.disabled = true;
         button.textContent = "下载中…";
-        try {
-            for (;;) {
-                let reason = "工作流没有提供 Hugging Face 文件链接。";
-                if (url) {
-                    try {
-                        await download(model, url);
-                        button.textContent = "已下载，请刷新";
-                        return;
-                    } catch (error) {
-                        reason = error.message;
-                    }
-                }
-                const choice = window.prompt(
-                    `${reason}\n1 重试 HF-Mirror\n2 在魔搭搜索模型\n3 粘贴文件直链\n取消即停止`
-                );
-                if (choice === "1" && hf.test(model.url || "")) {
-                    url = model.url;
-                } else if (choice === "2") {
-                    window.open(
-                        `https://modelscope.cn/search?search=${encodeURIComponent(model.name.split("/").pop())}`,
-                        "_blank", "noopener,noreferrer"
-                    );
-                    url = window.prompt("核对仓库、版本和精度后，粘贴魔搭文件直链。也可以取消。");
-                    if (!url) break;
-                } else if (choice === "3") {
-                    url = window.prompt("粘贴 HF-Mirror 或魔搭文件直链。");
-                    if (!url) break;
-                } else {
-                    break;
-                }
-            }
-        } finally {
-            button.disabled = false;
-            if (button.textContent === "下载中…") button.textContent = "HF-Mirror";
+        if (await downloadWithFallback(model) === "downloaded") {
+            window.alert(`${model.name} 下载完成，请刷新缺失模型列表。`);
         }
+    });
+}
+
+function batchModels(original) {
+    const card = original.closest('[data-testid="missing-model-actions"]')?.parentElement;
+    const models = new Map();
+    const unresolved = new Set();
+    for (const control of card?.querySelectorAll(rowControls) ?? []) {
+        const model = rowModel(control);
+        if (model?.directory) {
+            models.set(JSON.stringify([model.directory, model.name]), model);
+        } else {
+            unresolved.add(control.closest(".min-h-8") ?? control);
+        }
+    }
+    return { models: [...models.values()], unresolved: unresolved.size };
+}
+
+function attachBatch(original) {
+    const button = addButton(original, "HF-Mirror 全部下载");
+    if (!button) return;
+    button.setAttribute("aria-live", "polite");
+    onDownload(button, async () => {
+        const { models, unresolved } = batchModels(original);
+        if (!models.length) {
+            window.alert("无法读取缺失模型的名称和目录。");
+            return;
+        }
+        let downloaded = 0;
+        let skipped = 0;
+        for (const [index, model] of models.entries()) {
+            button.textContent = `HF-Mirror ${index + 1}/${models.length}`;
+            const result = await downloadWithFallback(model, true);
+            if (result === "stopped") break;
+            if (result === "downloaded") downloaded++;
+            if (result === "skipped") skipped++;
+        }
+        const remaining = models.length - downloaded - skipped;
+        const summary = [`已下载 ${downloaded} 个`];
+        if (skipped) summary.push(`已跳过 ${skipped} 个`);
+        if (remaining) summary.push(`未完成 ${remaining} 个`);
+        if (unresolved) summary.push(`无法读取目录的模型行 ${unresolved} 个`);
+        window.alert(summary.join("，") + (downloaded ? "。请刷新缺失模型列表。" : "。"));
     });
 }
 
@@ -108,15 +186,13 @@ app.registerExtension({
     name: "Local.ModelMirror",
     setup() {
         const scan = () => {
-            const controls = document.querySelectorAll(
-                '[data-testid="missing-model-download"], [data-testid="missing-model-locate"]'
-            );
-            for (const control of controls) {
+            for (const control of document.querySelectorAll(rowControls)) {
                 if (!rowModel(control)?.directory) continue;
                 if (control.dataset.testid === "missing-model-locate" &&
                     control.closest(".min-h-8")?.querySelector('[data-testid="missing-model-download"]')) continue;
                 attach(control);
             }
+            for (const control of document.querySelectorAll(downloadAllControl)) attachBatch(control);
         };
         let scheduled = false;
         new MutationObserver(() => {
