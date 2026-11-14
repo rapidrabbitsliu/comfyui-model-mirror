@@ -1,13 +1,12 @@
 import { app } from "/scripts/app.js";
 
-const rowControls = '[data-testid="missing-model-download"], [data-testid="missing-model-locate"]';
+const rowDownloadControl = '[data-testid="missing-model-download"]';
+const rowControls = `${rowDownloadControl}, [data-testid="missing-model-locate"]`;
 const downloadAllControl = '[data-testid="missing-model-download-all"]';
+const downloadControls = `${rowDownloadControl}, ${downloadAllControl}`;
+const actionsSelector = '[data-testid="missing-model-actions"]';
+const preferenceKey = "comfyui-model-mirror.enabled";
 const hfUrl = /^https:\/\/(huggingface\.co|hf\.co|hf-mirror\.com)\//i;
-const allDownloadControls = [
-    '[data-testid="missing-model-download"]',
-    downloadAllControl,
-    "[data-model-mirror]",
-].join(", ");
 
 function rowProps(button) {
     for (let element = button; element; element = element.parentElement) {
@@ -73,7 +72,7 @@ function formatTime(seconds) {
     return minutes >= 60 ? `${Math.floor(minutes / 60)}:${clock}` : clock;
 }
 
-async function downloadWithProgress(model, url, status) {
+async function downloadWithProgress(model, url, status, button) {
     const id = crypto.randomUUID();
     const start = performance.now();
     let current = { bytes: 0, total: null };
@@ -93,6 +92,9 @@ async function downloadWithProgress(model, url, status) {
         const eta = current.total && speed > 0 && current.bytes < current.total
             ? formatTime((current.total - current.bytes) / speed)
             : "—";
+        if (current.total) {
+            button.style.setProperty("--model-mirror-progress", `${Math.min(100, 100 * current.bytes / current.total)}%`);
+        }
         status.textContent = `${model.name} · ${size} · ${formatBytes(speed)}/s · 已用 ${formatTime((now - start) / 1000)} · 预计剩余 ${eta}`;
     };
 
@@ -123,34 +125,24 @@ async function downloadWithProgress(model, url, status) {
     } finally {
         done = true;
         clearInterval(timer);
-        status.textContent = "";
+        button.style.removeProperty("--model-mirror-progress");
     }
 }
 
-function addButton(original, label) {
-    if (original.nextElementSibling?.dataset.modelMirror) return;
-    const button = document.createElement("button");
-    button.type = "button";
-    button.dataset.modelMirror = "true";
-    button.className = "ml-1 shrink-0 rounded border px-2 py-1 text-xs";
-    button.textContent = label;
-    original.after(button);
-    return button;
-}
-
-async function downloadWithFallback(model, status, batch = false) {
+async function downloadWithFallback(model, status, button, batch = false) {
     const mirrorUrl = hfUrl.test(model.url || "") ? model.url : "";
     let url = mirrorUrl;
     for (;;) {
         let reason = "工作流没有提供 Hugging Face 文件链接。";
         if (url) {
             try {
-                await downloadWithProgress(model, url, status);
+                await downloadWithProgress(model, url, status, button);
                 return "downloaded";
             } catch (error) {
                 reason = error.message;
             }
         }
+        status.textContent = `${model.name} · 等待选择下载来源`;
         const choice = window.prompt([
             `${model.name}：${reason}`,
             ...(mirrorUrl ? ["1 重试 HF-Mirror"] : []),
@@ -181,58 +173,46 @@ async function downloadWithFallback(model, status, batch = false) {
 let lockedButtons;
 
 function lockDownloadButtons() {
-    for (const button of document.querySelectorAll(allDownloadControls)) {
+    for (const button of document.querySelectorAll(`${downloadControls}, [data-model-mirror-switch] input`)) {
         if (button.disabled) continue;
         button.disabled = true;
         lockedButtons.add(button);
     }
 }
 
-function onDownload(button, task) {
-    button.addEventListener("click", async () => {
-        if (lockedButtons) return;
-        lockedButtons = new Set();
-        lockDownloadButtons();
-        const label = button.textContent;
-        const spinner = document.createElement("span");
-        spinner.className = "model-mirror-spinner";
-        spinner.setAttribute("aria-hidden", "true");
-        const caption = document.createElement("span");
-        caption.textContent = "下载中…";
-        button.replaceChildren(spinner, caption);
-        button.setAttribute("aria-busy", "true");
-        const status = document.createElement("div");
-        status.className = "break-all px-1 py-1 text-xs text-muted-foreground";
-        (button.closest('[data-testid="missing-model-actions"], .min-h-8') ?? button).after(status);
-        try {
-            await task(caption, status);
-        } finally {
-            status.remove();
-            button.textContent = label;
-            button.removeAttribute("aria-busy");
-            for (const control of lockedButtons) control.disabled = false;
-            lockedButtons = null;
-        }
-    });
+async function withDownloadState(button, task) {
+    lockedButtons = new Set();
+    lockDownloadButtons();
+    const overlay = document.createElement("span");
+    overlay.className = "model-mirror-loading";
+    overlay.setAttribute("aria-hidden", "true");
+    const caption = document.createElement("span");
+    caption.textContent = "下载中…";
+    overlay.append(caption);
+    button.append(overlay);
+    button.setAttribute("aria-busy", "true");
+    const anchor = button.closest(`${actionsSelector}, .min-h-8`) ?? button;
+    const previous = anchor.nextElementSibling;
+    if (previous?.hasAttribute("data-model-mirror-status")) previous.remove();
+    const status = document.createElement("div");
+    status.dataset.modelMirrorStatus = "";
+    status.className = "break-all px-1 py-1 text-xs text-muted-foreground";
+    anchor.after(status);
+    try {
+        await task(caption, status);
+    } catch (error) {
+        status.textContent = `下载失败 · ${error.message}`;
+    } finally {
+        if (!status.textContent) status.remove();
+        overlay.remove();
+        button.removeAttribute("aria-busy");
+        for (const control of lockedButtons) control.disabled = false;
+        lockedButtons = null;
+    }
 }
 
-function attach(original) {
-    const button = addButton(original, "HF-Mirror");
-    if (!button) return;
-    onDownload(button, async (_caption, status) => {
-        const model = rowModel(original);
-        if (!model?.directory) {
-            window.alert("无法读取模型目录，请检查前端版本。");
-            return;
-        }
-        if (await downloadWithFallback(model, status) === "downloaded") {
-            window.alert(`${model.name} 下载完成，请刷新缺失模型列表。`);
-        }
-    });
-}
-
-function batchModels(original) {
-    const card = original.closest('[data-testid="missing-model-actions"]')?.parentElement;
+function batchModels(button) {
+    const card = button.closest(actionsSelector)?.parentElement;
     const models = new Map();
     const unresolved = new Set();
     for (const control of card?.querySelectorAll(rowControls) ?? []) {
@@ -246,31 +226,75 @@ function batchModels(original) {
     return { models: [...models.values()], unresolved: unresolved.size };
 }
 
-function attachBatch(original) {
-    const button = addButton(original, "HF-Mirror 全部下载");
-    if (!button) return;
-    button.setAttribute("aria-live", "polite");
-    onDownload(button, async (caption, status) => {
-        const { models, unresolved } = batchModels(original);
-        if (!models.length) {
-            window.alert("无法读取缺失模型的名称和目录。");
+async function downloadBatch(button, caption, status) {
+    const { models, unresolved } = batchModels(button);
+    if (!models.length) {
+        window.alert("无法读取缺失模型的名称和目录。");
+        return;
+    }
+    let downloaded = 0;
+    let skipped = 0;
+    for (const [index, model] of models.entries()) {
+        caption.textContent = `下载中 ${index + 1}/${models.length}`;
+        const result = await downloadWithFallback(model, status, button, true);
+        if (result === "stopped") break;
+        if (result === "downloaded") downloaded++;
+        if (result === "skipped") skipped++;
+    }
+    const remaining = models.length - downloaded - skipped;
+    const summary = [`已下载 ${downloaded} 个`];
+    if (skipped) summary.push(`已跳过 ${skipped} 个`);
+    if (remaining) summary.push(`未完成 ${remaining} 个`);
+    if (unresolved) summary.push(`无法读取目录的模型行 ${unresolved} 个`);
+    status.textContent = summary.join("，") + (downloaded ? "。请刷新缺失模型列表。" : "。");
+}
+
+let mirrorEnabled = localStorage.getItem(preferenceKey) !== "false";
+
+function addMirrorSwitch(actions) {
+    let label = actions.previousElementSibling;
+    if (!label?.hasAttribute("data-model-mirror-switch")) label = null;
+    if (label) {
+        label.firstElementChild.checked = mirrorEnabled;
+        return;
+    }
+    label = document.createElement("label");
+    label.dataset.modelMirrorSwitch = "";
+    label.className = "mt-2 inline-flex items-center gap-1.5 text-xs";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.setAttribute("role", "switch");
+    input.checked = mirrorEnabled;
+    input.addEventListener("change", () => {
+        mirrorEnabled = input.checked;
+        localStorage.setItem(preferenceKey, String(mirrorEnabled));
+        for (const other of document.querySelectorAll("[data-model-mirror-switch] input")) {
+            other.checked = mirrorEnabled;
+        }
+    });
+    label.append(input, "使用 HF-Mirror");
+    actions.before(label);
+}
+
+async function interceptDownload(event) {
+    const button = event.target.closest?.(downloadControls);
+    if (!button || (!mirrorEnabled && !lockedButtons)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (lockedButtons || button.disabled) return;
+    await withDownloadState(button, async (caption, status) => {
+        if (button.matches(downloadAllControl)) {
+            await downloadBatch(button, caption, status);
             return;
         }
-        let downloaded = 0;
-        let skipped = 0;
-        for (const [index, model] of models.entries()) {
-            caption.textContent = `下载中 ${index + 1}/${models.length}`;
-            const result = await downloadWithFallback(model, status, true);
-            if (result === "stopped") break;
-            if (result === "downloaded") downloaded++;
-            if (result === "skipped") skipped++;
+        const model = rowModel(button);
+        if (!model?.directory) {
+            window.alert("无法读取模型目录，请检查前端版本。");
+            return;
         }
-        const remaining = models.length - downloaded - skipped;
-        const summary = [`已下载 ${downloaded} 个`];
-        if (skipped) summary.push(`已跳过 ${skipped} 个`);
-        if (remaining) summary.push(`未完成 ${remaining} 个`);
-        if (unresolved) summary.push(`无法读取目录的模型行 ${unresolved} 个`);
-        window.alert(summary.join("，") + (downloaded ? "。请刷新缺失模型列表。" : "。"));
+        status.textContent = await downloadWithFallback(model, status, button) === "downloaded"
+            ? `${model.name} 下载完成，请刷新缺失模型列表。`
+            : `${model.name} · 下载已停止`;
     });
 }
 
@@ -280,22 +304,37 @@ app.registerExtension({
         const styles = document.createElement("style");
         styles.textContent = `
             @keyframes model-mirror-spin { to { transform: rotate(360deg); } }
-            .model-mirror-spinner {
-                display: inline-block; width: 0.85em; height: 0.85em; margin-right: 0.35em;
+            :is([data-testid="missing-model-download"], [data-testid="missing-model-download-all"])[aria-busy="true"] {
+                position: relative; min-width: 6em; color: transparent;
+            }
+            [aria-busy="true"]:has(> .model-mirror-loading) > :not(.model-mirror-loading) { visibility: hidden; }
+            .model-mirror-loading {
+                position: absolute; inset: 0; display: flex; align-items: center;
+                justify-content: center; gap: 0.35em; color: var(--foreground, CanvasText);
+                white-space: nowrap;
+            }
+            .model-mirror-loading::after {
+                content: ""; position: absolute; bottom: 0; left: 0; height: 2px;
+                width: var(--model-mirror-progress, 0%); background: currentColor;
+                transition: width 0.25s ease;
+            }
+            .model-mirror-loading::before {
+                content: ""; width: 0.85em; height: 0.85em;
                 border: 2px solid currentColor; border-right-color: transparent;
                 border-radius: 50%; animation: model-mirror-spin 0.8s linear infinite;
             }
-            @media (prefers-reduced-motion: reduce) { .model-mirror-spinner { animation: none; } }
+            @media (prefers-reduced-motion: reduce) {
+                .model-mirror-loading::before { animation: none; }
+                .model-mirror-loading::after { transition: none; }
+            }
         `;
         document.head.append(styles);
+        document.addEventListener("click", interceptDownload, true);
         const scan = () => {
-            for (const control of document.querySelectorAll(rowControls)) {
-                if (!rowModel(control)?.directory) continue;
-                if (control.dataset.testid === "missing-model-locate" &&
-                    control.closest(".min-h-8")?.querySelector('[data-testid="missing-model-download"]')) continue;
-                attach(control);
+            for (const label of document.querySelectorAll("[data-model-mirror-switch]")) {
+                if (!label.nextElementSibling?.matches(actionsSelector)) label.remove();
             }
-            for (const control of document.querySelectorAll(downloadAllControl)) attachBatch(control);
+            for (const actions of document.querySelectorAll(actionsSelector)) addMirrorSwitch(actions);
             if (lockedButtons) lockDownloadButtons();
         };
         let scheduled = false;
