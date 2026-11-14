@@ -1,0 +1,7 @@
+# ComfyUI Model Mirror
+
+为 ComfyUI 缺失模型面板添加 HF-Mirror 按钮。插件按工作流链接中的仓库、revision 和文件路径下载，并将文件保存到 ComfyUI 的模型目录。镜像失败后可以重试、打开魔搭搜索，或粘贴 HF-Mirror / 魔搭文件直链。使用魔搭前请核对原仓库、版本、精度和量化格式。
+
+把本仓库放入 ComfyUI 的 `custom_nodes`，重启 ComfyUI，再刷新浏览器。Docker 部署可把插件仓库挂载到 `/opt/ComfyUI/custom_nodes/comfyui-model-mirror`。下载完成后刷新缺失模型列表。
+
+面板接入基于 ComfyUI 前端 1.58.5 的组件属性，升级前端后需复测。后端只接受支持的模型站点，下载时使用临时文件，已有模型不会被覆盖。工作流提供 SHA-256 时会先校验。仅适用于本机使用的 ComfyUI。
